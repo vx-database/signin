@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
+<meta name="referrer" content="no-referrer">
+<title>VX Database sign-in</title>
+<!-- Sign-in page of the VX Database connector (Stage 11b, DECISIONS #482 #487). Public by design (#482 Q2 = A): it holds only the database's
+     public address and its PUBLISHABLE key, which can read nothing (every table has row-level security with no policies).
+     Source of truth: db/team/signin_page/index.html in the project folder; published with db/team/publish_signin_page.sh. -->
+<style>
+  :root { --bg: #f7f6f3; --card: #ffffff; --ink: #1f2328; --muted: #5d6470; --line: #dedbd4; --accent: #2f5d50; --accent-ink: #ffffff; --warn: #8a3b12; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181b; --card: #1f2226; --ink: #e8e6e1; --muted: #a3a8b0; --line: #34383e; --accent: #7fb8a4; --accent-ink: #10221c; --warn: #f0a37a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 440px; margin: 0 auto; padding: 48px 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 28px 24px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p { margin: 10px 0; color: var(--muted); }
+  p.big { color: var(--ink); }
+  button { display: block; width: 100%; margin-top: 16px; padding: 13px 16px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button.go { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .6; cursor: default; }
+  .who { font-weight: 600; color: var(--ink); }
+  .err { color: var(--warn); }
+  a { color: var(--accent); }
+  .small { font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="box">
+    <h1>VX Database</h1>
+    <p id="msg">One moment...</p>
+    <div id="actions"></div>
+  </div>
+  <p class="small">This page connects Claude to the V&amp;X customer and sales database. Only people on the team list can use it.</p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+(async function () {
+  var URL_ = 'https://pcmsxnkifaazycvyfmws.supabase.co';
+  var KEY = 'sb_publishable_Qd8tLmI-y1Uhy3sVfEO4Sg__--wrMXO';
+  var msg = document.getElementById('msg'), actions = document.getElementById('actions');
+  function say(html, cls) { msg.innerHTML = html; msg.className = cls || 'big'; }
+  function button(label, cls, fn) { var b = document.createElement('button'); b.textContent = label; b.className = cls || ''; b.onclick = function () { b.disabled = true; fn(b); }; actions.appendChild(b); return b; }
+  function clear() { actions.innerHTML = ''; }
+  function esc(s) { return String(s || '').replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  var q = new URLSearchParams(location.search);
+  var authId = q.get('authorization_id');
+  try { if (authId) sessionStorage.setItem('vx_auth_id', authId); else authId = sessionStorage.getItem('vx_auth_id'); } catch (e) {}
+  if (!authId) {
+    say('This is the sign-in page for the VX Database connector. Open it from Claude: Settings, Connectors, VX Database, Connect.');
+    return;
+  }
+  var sb = supabase.createClient(URL_, KEY, { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } });
+  var here = location.origin + location.pathname + '?authorization_id=' + encodeURIComponent(authId);
+  var s = await sb.auth.getSession();
+  var user = s.data && s.data.session && s.data.session.user;
+  if (q.get('error_description')) { say('Google sign-in did not finish: ' + esc(q.get('error_description')) + '. Please try again.', 'err'); }
+  if (!user) {
+    if (!q.get('error_description')) say('Sign in with your V&amp;X Google account (@vmtherapy.com) to connect Claude to the database.');
+    button('Continue with Google', 'go', async function () {
+      var r = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: here, queryParams: { hd: 'vmtherapy.com', prompt: 'select_account' } } });
+      if (r.error) say('Could not start Google sign-in: ' + esc(r.error.message), 'err');
+    });
+    return;
+  }
+  history.replaceState(null, '', here);
+  var d = await sb.auth.oauth.getAuthorizationDetails(authId);
+  if (d.error) {
+    say('This sign-in link has expired or was already used. Go back to Claude and press Connect again. (' + esc(d.error.message) + ')', 'err');
+    button('Sign in as someone else', '', async function () { await sb.auth.signOut(); location.replace(here); });
+    return;
+  }
+  var data = d.data || {};
+  // GUARD (Xander, #489): only the real Claude may be approved - the app must return to claude.ai or claude.com, nowhere else.
+  function isClaude(u) { try { var h = new URL(u).hostname.toLowerCase(); return ['claude.ai', 'www.claude.ai', 'claude.com', 'www.claude.com'].indexOf(h) >= 0; } catch (e) { return false; } }
+  var back = data.redirect_uri || data.redirect_url || '';
+  if (!isClaude(back)) {
+    say('STOP: this request does not come from Claude - it would send you to ' + esc(back ? new URL(back).hostname : 'an unknown address') +
+        '. Nothing was shared. Please close this page and tell Xander.', 'err');
+    try { await sb.auth.oauth.denyAuthorization(authId); } catch (e) {}
+    return;
+  }
+  if (data.redirect_url && !data.authorization_id) { say('Connected. Taking you back to Claude...'); location.replace(data.redirect_url); return; }
+  var app = (data.client && (data.client.name || data.client.client_name)) || 'Claude';
+  say('<span class="who">' + esc(app) + '</span> wants to use the VX Database as <span class="who">' + esc(user.email) + '</span>. ' +
+      'It will be able to read the database, save notes to the team guide in your name, and start a quick refresh.');
+  button('Allow', 'go', async function () {
+    var r = await sb.auth.oauth.approveAuthorization(authId);
+    var to = r.data && (r.data.redirect_url || r.data.redirect_to);
+    if (r.error || !to) { say('Could not finish: ' + esc(r.error ? r.error.message : 'no address to return to') + '. Go back to Claude and press Connect again.', 'err'); return; }
+    say('Connected. Taking you back to Claude...'); clear(); location.replace(to);
+  });
+  button('Cancel', '', async function () {
+    var r = await sb.auth.oauth.denyAuthorization(authId);
+    var to = r.data && (r.data.redirect_url || r.data.redirect_to);
+    clear(); if (to) location.replace(to); else say('Cancelled. You can close this page.');
+  });
+  button('Not ' + user.email + '? Sign in as someone else', '', async function () { await sb.auth.signOut(); location.replace(here); });
+})();
+</script>
+</body>
+</html>
